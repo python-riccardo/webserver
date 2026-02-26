@@ -4,114 +4,118 @@ import yaml
 import os
 import logging
 
-# Carico il file YAML
 def leggi_file_yaml(percorso):
     try: 
         with open(percorso, "r", encoding="utf-8") as file:
-                configurazione = yaml.safe_load(file)
+            configurazione = yaml.safe_load(file)
+            return configurazione
     except FileNotFoundError:
-        logging.error("Errore!\nFile non trovato. Controllare il percorso inserito!")
-        configurazione = None
+        logging.error(f"Errore: File '{percorso}' non trovato.")
     except Exception as e:
-        logging.error(f"Errore: {e}")
-        configurazione = None
-    finally:
-        return configurazione
+        logging.error(f"Errore durante la lettura dello YAML: {e}")
+    return None
 
-# Validazione YAML
 def valida_file_yaml(configurazione):
+    """Verifica che le sezioni fondamentali siano presenti."""
+    if not configurazione:
+        return False
     
+    campi_richiesti = ["server", "static_dir", "mime_types"]
+    for campo in campi_richiesti:
+        if campo not in configurazione:
+            logging.error(f"Campo mancante nel file di configurazione: {campo}")
+            return False
+    return True
 
-# Gestione del server
-def risposta_server(client_socket, client_address, static_dir,configurazione):
+def risposta_server(client_socket, client_address, configurazione):
     try:
         data = client_socket.recv(4096).decode("utf-8")
         if not data:
             return
         
-        # Estraggo dalla richiesta HTTP la pagina desiderata
+        static_dir = configurazione.get("static_dir", "./public")
         prima_riga = data.split("\n")[0]
-        percorso_richiesto = prima_riga.split()[1] # Es: "/" o "/chi-siamo"
-        logging.info(f"Richiesta per: {percorso_richiesto}")
+        percorso_richiesto = prima_riga.split()[1]
+        
+        logging.info(f"Richiesta da {client_address}: {percorso_richiesto}")
 
-        # Leggo dal file YAML la mappa delle routes, se non c'è restituisce una lista vuota
         mappa = configurazione.get("routes", [])
         nome_file = None
 
-        # Cerco il percorso nella lista dello YAML
         for route in mappa:
             if route["path"] == percorso_richiesto:
                 nome_file = route["file"]
                 break
 
         if nome_file:
-            # Se il file esiste la status line è positiva
-            status_line = "HTTP/1.1 200 OK\r\n"
             percorso_completo = os.path.join(static_dir, nome_file)
-            
-            # Trovo l'estensione
-            estensione = os.path.splitext(nome_file)[1]
-            
-            mime_mappa = configurazione["mime_types"]
-            tipo_mime = mime_mappa[estensione]
-            
-            headers = f"Content-Type: {tipo_mime}; charset=utf-8\r\n"
-            
-            with open(percorso_completo, "rb") as f:
-                body = f.read()
+            if os.path.exists(percorso_completo):
+                status_line = "HTTP/1.1 200 OK\r\n"
+                estensione = os.path.splitext(nome_file)[1]
+                
+                # Goal 2: Gestione sicura del MIME type con default
+                tipo_mime = configurazione.get("mime_types", {}).get(estensione, "application/octet-stream")
+                
+                headers = f"Content-Type: {tipo_mime}; charset=utf-8\r\n"
+                with open(percorso_completo, "rb") as f:
+                    body = f.read()
+            else:
+                raise FileNotFoundError # Gestito dal blocco except sotto
         else:
-            # Se il file non esiste la status line è negativa
             status_line = "HTTP/1.1 404 Not Found\r\n"
             body = b"<h1>404 - Pagina non trovata</h1>"
             headers = "Content-Type: text/html; charset=utf-8\r\n"
 
         headers += f"Content-Length: {len(body)}\r\n"
         headers += "Connection: close\r\n\r\n"
-
-        risposta = status_line.encode("utf-8") + headers.encode("utf-8") + body
-        client_socket.sendall(risposta)
+        client_socket.sendall(status_line.encode("utf-8") + headers.encode("utf-8") + body)
 
     except Exception as e:
-        print(f"Errore: {e}")
+        logging.error(f"Errore durante la gestione della richiesta: {e}")
     finally:
         client_socket.close()
 
-# Punto di ingresso del programma
 if __name__ == "__main__":
+    # Configurazione iniziale del logging con valori di default.
+    # Questo permette di loggare errori anche se il file YAML non viene trovato.
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
 
-    # Leggo il file YAML e lo carico in configurazione    
-    configurazione = leggi_file_yaml("server_config.yaml")
+    config = leggi_file_yaml("server_config.yaml")
     
-    isValido = valida_file_yaml(configurazione)
-    if isValido:
-        # Subito dopo aver caricato la configurazione sistemo il logging
-        log_config = configurazione.get("logging", {})
+    if valida_file_yaml(config):
+        # Sovrascrivo la configurazione del logging con i dati del file YAML
+        log_section = config.get("logging", {})
+        log_file = log_section.get("file", "server.log")
+        log_level = log_section.get("level", "INFO").upper()
+
+        # Aggiornamento logger (rimuove i vecchi handler e ne mette di nuovi)
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+            
         logging.basicConfig(
-                filename=log_config.get("file", "server.log"),
-                level=log_config.get("level", "INFO").upper(),
-                format='%(asctime)s - %(levelname)s - %(message)s'
-            )
+            filename=log_file,
+            level=getattr(logging, log_level, logging.INFO),
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
 
-        if configurazione is not None:
-            # Estraggo indirizzo IP, Porta e Massimo Connessioni dal file YAML
-            host = configurazione["server"]["host"]
-            porta = configurazione["server"]["port"]
-            max_connections = configurazione["server"]["max_connections"]
+        host = config["server"]["host"]
+        porta = config["server"]["port"]
+        max_conn = config["server"]["max_connections"]
 
-            # Avvio socket
-            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((host, porta))
+        server_socket.listen(max_conn)
 
-            server_socket.bind((host, porta))
-            server_socket.listen(max_connections)
+        logging.info(f"Server avviato correttamente su http://{host}:{porta}")
 
-            print(f"Server in esecuzione su http://{host}:{porta}")
-
-            while True:
-                client_socket, client_address = server_socket.accept()
-                t = threading.Thread(target=risposta_server, args=(client_socket, client_address, configurazione["static_dir"], configurazione, ))
-                t.start()
-        else:
-            print("Fine programma")
+        while True:
+            client_sock, addr = server_socket.accept()
+            t = threading.Thread(target=risposta_server, args=(client_sock, addr, config))
+            t.daemon = True # Il thread si chiude se il main si chiude
+            t.start()
     else:
-        logging.error("Il file non è valido")
+        logging.critical("Impossibile avviare il server: configurazione non valida o mancante.")
