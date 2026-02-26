@@ -4,6 +4,7 @@ import yaml
 import os
 import logging
 
+# Funzione per caricare un file yaml in modo sicuro
 def leggi_file_yaml(percorso):
     try: 
         with open(percorso, "r", encoding="utf-8") as file:
@@ -15,11 +16,11 @@ def leggi_file_yaml(percorso):
         logging.error(f"Errore durante la lettura dello YAML: {e}")
     return None
 
+# Funzione per validare il file YAML
 def valida_file_yaml(configurazione):
-    """Verifica che le sezioni fondamentali siano presenti."""
     if not configurazione:
         return False
-    
+    # Se il file esiste verifico che i campi obbligatori siano presenti
     campi_richiesti = ["server", "static_dir", "mime_types"]
     for campo in campi_richiesti:
         if campo not in configurazione:
@@ -27,6 +28,7 @@ def valida_file_yaml(configurazione):
             return False
     return True
 
+# Funzione per gestire la ricezione e l'invio di dati al client
 def risposta_server(client_socket, client_address, configurazione):
     try:
         data = client_socket.recv(4096).decode("utf-8")
@@ -53,14 +55,15 @@ def risposta_server(client_socket, client_address, configurazione):
                 status_line = "HTTP/1.1 200 OK\r\n"
                 estensione = os.path.splitext(nome_file)[1]
                 
-                # Goal 2: Gestione sicura del MIME type con default
+                # Metto dei mime type di default
                 tipo_mime = configurazione.get("mime_types", {}).get(estensione, "application/octet-stream")
                 
                 headers = f"Content-Type: {tipo_mime}; charset=utf-8\r\n"
                 with open(percorso_completo, "rb") as f:
                     body = f.read()
             else:
-                raise FileNotFoundError # Gestito dal blocco except sotto
+                # Se non trovo il percorso del file chiamo l'eccezione 
+                raise FileNotFoundError
         else:
             status_line = "HTTP/1.1 404 Not Found\r\n"
             body = b"<h1>404 - Pagina non trovata</h1>"
